@@ -1,3 +1,4 @@
+
 from openpyxl import  Workbook
 import xml.etree.cElementTree as ET
 import argparse
@@ -6,6 +7,8 @@ from operator import itemgetter
 import datetime
 import sqlite3
 import re
+import dateutil.parser
+
 import pickle
 import pytz
 
@@ -25,11 +28,13 @@ def dict_to_ordered_array_for_excel(dict, sortkey):
 
 
 class CobaltData:
+
+    ##used to filter out users or hosts
     filter = {
-        "user": ["sanbox/testiser"]
+        "user": ["sandbox/testuser"]
     }
 
-    def __init__(self, cobalt_dir=False, empire_dir=False):
+    def __init__(self, cobalt_dir=False, empire_dir=False, covenant_dir=False):
         self.cobalt_dir = cobalt_dir
         if cobalt_dir:
             self.sessionsxml,self.activityxml,self.c2xml,self.credentialsxml = self.load_cobalt_data_from_dir()
@@ -38,6 +43,10 @@ class CobaltData:
         self.empire_dir = empire_dir
         if empire_dir:
             self.empire_sessions, self.empire_activities = self.parse_empire_data()
+
+        self.covenant_dir = covenant_dir
+        if covenant_dir:
+            self.covenant_sessions, self.covenant_activities = self.parse_covenant_data()
 
         self.sessions = {}
         self.activity = []
@@ -67,6 +76,14 @@ class CobaltData:
                 self.sessions[key] = session
             for activity in self.empire_activities:
                 activity["agent_type"] = "empire"
+                self.activity.append(activity)
+
+        if self.covenant_dir:
+            for key, session in self.covenant_sessions.items():
+                session["agent_type"] = "covenant"
+                self.sessions[key] = session
+            for activity in self.covenant_activities:
+                activity["agent_type"] = "covenant"
                 self.activity.append(activity)
 
 
@@ -155,6 +172,7 @@ class CobaltData:
             xml =xmlfile.read()
             xml = xml.replace('\0','')
             xml = xml.replace('&','&amp;')
+            xml = xml.replace("\u001f", " ")
             tree = ET.fromstring(xml)
             return tree
 
@@ -256,6 +274,68 @@ class CobaltData:
 
         return sessions, activities
 
+    def parse_covenant_data(self):
+        covenant_dir = self.covenant_dir
+
+        if not os.path.isdir(covenant_dir):
+            raise FileNotFoundError("not a directory")
+            print("not a directory")
+
+        data_dir = os.path.join(covenant_dir, 'data')
+        if not os.path.isdir(data_dir):
+            raise FileNotFoundError("data dir not found")
+            print("data dir not found")
+
+
+        ##load in data from covenant database
+        db_file = os.path.join(covenant_dir,'data', 'covenant.db')
+        if not os.path.exists(db_file):
+            raise FileNotFoundError("covenant db not found")
+            print("covenant db  not found")
+
+        conn = sqlite3.connect(db_file)
+        conn.row_factory = sqlite3.Row
+
+        c = conn.cursor()
+
+        # collect grunts and commands
+        c.execute(
+            "select  Grunts.id, ActivationTime as opened,  ConnectAddresses as external, IPAddress as internal, UserName as user, Integrity as high_integrity, HostName as computer, Process as pid  from Grunts inner join Listeners on Grunts.listenerid = Listeners.id;")
+        sessions = {}
+        for row in c:
+            id =  "cov-" + str(row["id"])
+            session = dict(zip(row.keys(), row))
+            if session["high_integrity"] == 1:
+                session["user"] = session["user"] + "*"
+            session.pop("high_integrity")
+
+
+            #harcoded for kevin
+            session["port"] = "443"
+            session["domains"] = "onedrive.com, storage.live.com"
+
+            session["opened"] = dateutil.parser.parse(session["opened"])
+            sessions[id] = session
+
+        activities = []
+        ## time to load in the files
+
+        session_fields_to_include_in_activity = [
+            "user", "internal", "computer", "pid", "domains", "port"
+        ]
+        c.execute("select  GruntId as bid, CommandTime as \"when\",  Command as data from GruntCommands;")
+        for row in c:
+            bid = "cov-" + str(row["bid"])
+            session_dict = sessions[bid]
+            activity =dict(zip(row.keys(), row))
+            activity["type"] = "covenant command"
+            activity["when"] =  dateutil.parser.parse(activity["when"])
+            for sessionkey in session_fields_to_include_in_activity:
+                activity[sessionkey] = session_dict[sessionkey]
+            activities.append(activity)
+
+
+        return sessions, activities
 
 
 
@@ -292,7 +372,6 @@ class CobaltData:
             xmlpath = os.path.join(cobalt_dir,COBALT_FILES[cfile])
             if not (os.path.exists(xmlpath)):
                 raise FileNotFoundError("missing cobalt xml export files. Ensure all exported cobalt XML files are in the specified dir")
-
             cxml[cfile] = self.load_xml_root(xmlpath)
 
 
@@ -345,17 +424,19 @@ class CobaltData:
 
 
 #credz
-        ws = wb.create_sheet("Credentials")
+        try:
+            ws = wb.create_sheet("Credentials")
 
-        credentials_array = self.credentials
-        header = credentials_array[0].keys()
-        ws.append(list(header))
+            credentials_array = self.credentials
+            header = credentials_array[0].keys()
+            ws.append(list(header))
 
-        for activity in credentials_array:
-            ws.append(list(activity.values()))
+            for activity in credentials_array:
+                ws.append(list(activity.values()))
 
-        ws.auto_filter.ref = 'A:{}'.format(chr(ord('A') + len(header) - 1))
-
+            ws.auto_filter.ref = 'A:{}'.format(chr(ord('A') + len(header) - 1))
+        except:
+            pass
         return wb
 
 
@@ -363,8 +444,11 @@ class CobaltData:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-d", help="Directory containing cobalt data", required=True)
+    parser.add_argument("-d", help="Directory containing cobalt data", required=False)
     parser.add_argument("-e", help="Directory containing empire data", required=False)
+    parser.add_argument("-c", help="Directory containing cov data", required=False)
+    parser.add_argument("-o", help="Output file", required=True)
+
     parser.add_argument("--filter", help="filter", required=False)
 
 
@@ -373,7 +457,8 @@ if __name__ == "__main__":
 
     cobalt_dir = args.d
     empire_dir = args.e
-    cobalt_data = CobaltData(cobalt_dir, empire_dir)
+    covenant_dir = args.c
+    cobalt_data = CobaltData(cobalt_dir, empire_dir, covenant_dir)
 
 
 
@@ -381,7 +466,7 @@ if __name__ == "__main__":
 
     sessions_workbook = cobalt_data.make_sessions_report()
 
-    sessions_workbook.save("sessions.xlsx")
+    sessions_workbook.save(args.o)
 
 
 
