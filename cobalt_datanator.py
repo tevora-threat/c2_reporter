@@ -12,6 +12,16 @@ import dateutil.parser
 import pickle
 import pytz
 
+
+class format_dict(dict):
+    def __missing__(self, key):
+        return ""
+
+
+
+
+
+
 def dict_to_ordered_array_for_excel(dict, sortkey):
     for entry in dict:
         if isinstance(dict[entry][sortkey],str):
@@ -48,7 +58,7 @@ class CobaltData:
         if covenant_dir:
             self.covenant_sessions, self.covenant_activities = self.parse_covenant_data()
 
-        self.sessions = {}
+        self.sessions = format_dict()
         self.activity = []
         self.credentials = []
         self.combinate_da_c2()
@@ -88,10 +98,10 @@ class CobaltData:
 
 
     def xml_entries_to_dict(self,xml,primarykey,exclude_keys=[]):
-        return_dict = {}
+        return_dict = format_dict()
         filter_dict = self.filter
         for entry in xml:
-            entry_dict = {}
+            entry_dict = format_dict()
             filtered = False
             for attrib in entry:
                 if attrib.tag == primarykey:
@@ -111,7 +121,7 @@ class CobaltData:
         return_array = []
         filter_dict = self.filter
         for entry in xml:
-            entry_dict = {}
+            entry_dict = format_dict()
             filtered = False
             for attrib in entry:
                 if attrib.tag in filter_dict:
